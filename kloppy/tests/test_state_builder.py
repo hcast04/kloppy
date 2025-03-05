@@ -53,6 +53,23 @@ class TestStateBuilder:
         assert events_per_sequence[0] == 4
         assert events_per_sequence[51] == 10
 
+    def test_possesion_state_builder(self, base_dir):
+        dataset = self._load_dataset(base_dir)
+
+        with performance_logging("add_state"):
+            dataset_with_state = dataset.add_state("possesion")
+
+        events_per_sequence = {}
+        for sequence_id, events in groupby(
+            dataset_with_state.events,
+            lambda event: event.state["possesion"].sequence_id,
+        ):
+            events = list(events)
+            events_per_sequence[sequence_id] = len(events)
+
+        assert events_per_sequence[0] != 4
+        assert events_per_sequence[51] != 10
+
     def test_lineup_state_builder(self, base_dir):
         dataset = self._load_dataset(base_dir, base_filename="statsbomb_15986")
 
