@@ -13,7 +13,7 @@ def add_state(dataset: EventDataset, *builder_keys: List[str]) -> EventDataset:
     Add state
 
     Arguments:
-        - builder_keys: `lineup` `score` `sequence`
+        - builder_keys: `lineup` `score` `sequence` `possesion`
 
     Examples:
         >>> dataset = dataset.add_state('lineup', 'score')

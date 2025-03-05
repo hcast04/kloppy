@@ -26,7 +26,7 @@ from ..builder import StateBuilder
 
 
 @dataclass
-class Sequence:
+class Possesion:
     sequence_id: int
     team: Optional[Team]
     previous_event_type: Optional[Type[Event]] = None
@@ -34,19 +34,24 @@ class Sequence:
 
 
 class PossesionStateBuilder(StateBuilder):
+    dataSet : EventDataset
+    next_event: Optional[Event]
+
     def __init__(self):
-        
-        self.off_ball_events = [
+        """
             EventType.PERIOD_START,
             EventType.PERIOD_END,
             EventType.LINEUP,
+            """
+        self.off_ball_events = [
+            
             EventType.SUBSTITUTION
         ]
         super().__init__()
 
-    def initial_state(self, dataset: EventDataset) -> Sequence:
-        
-        return Sequence(sequence_id=0, team=None)
+    def initial_state(self, dataset: EventDataset) -> Possesion:
+        self.dataSet = dataset
+        return Possesion(sequence_id=0, team=None)
 
     def _is_off_ball_event(self, event: Event) -> bool:
         
@@ -56,7 +61,7 @@ class PossesionStateBuilder(StateBuilder):
 
     def _is_set_piece(self, event: Event) -> bool:
         
-        if hasattr(event, 'qualifiers'):
+        if hasattr(event, 'qualifiers') and event.qualifiers is not None:
             for qualifier in event.qualifiers:
                 if isinstance(qualifier, SetPieceQualifier):
                     return True
@@ -85,7 +90,6 @@ class PossesionStateBuilder(StateBuilder):
     def _is_rebound(self, event: Event, next_event: Optional[Event] = None) -> bool:
         
         if isinstance(event, ShotEvent) and event.result != ShotResult.GOAL:
-            # If we have the next event, check if it's soon after and by same team
             if next_event and hasattr(next_event, 'timestamp') and hasattr(event, 'timestamp'):
                 time_diff = next_event.timestamp - event.timestamp
                 return (time_diff.total_seconds() < 3 and
@@ -101,86 +105,57 @@ class PossesionStateBuilder(StateBuilder):
         return (isinstance(event, (PassEvent, CarryEvent, RecoveryEvent, TakeOnEvent)) or
                 self._is_goalkeeper_claim(event) or
                 self._is_successful_interception(event))
+    
 
-    def reduce_before(self, state: Sequence, event: Event) -> Sequence:
+
+    def reduce_before(self, state: Possesion, event: Event) -> Possesion:
         
         if self._is_off_ball_event(event):
-            
             return state
 
-        if self.can_start_sequence(event):
-            should_start_new_sequence = False
+        events = self.dataSet.events
+        event_index = events.index(event) if event in events else -1
+        self.next_event = events[event_index + 1] if 0 <= event_index and event_index < len(events) - 1 else None
 
-            
-            if state.team != event.team:
+        should_start_new_sequence = self.can_start_sequence(event)
+
+        if should_start_new_sequence:
+            if state.team != event.team or self._is_set_piece(event):
                 should_start_new_sequence = True
-            elif self._is_set_piece(event):
-                should_start_new_sequence = True
-            elif self._is_goalkeeper_claim(event):
-                should_start_new_sequence = True
-            elif self._is_successful_interception(event):
-                should_start_new_sequence = True
-            elif isinstance(event, TakeOnEvent) and event.result:
+            elif isinstance(event, TakeOnEvent) and getattr(event, 'result', True):
                 should_start_new_sequence = True
 
-            
-            if (isinstance(event, DuelEvent) and event.result == DuelResult.WON and
-                    state.previous_event_type == DuelEvent and
-                    state.previous_event_outcome == DuelResult.LOST):
+            if isinstance(event, DuelEvent) and event.result == DuelResult.WON and state.previous_event_type == DuelEvent and state.previous_event_outcome == DuelResult.LOST:
                 should_start_new_sequence = True
 
-            
-            if self._is_failed_pass(event):
+            if self._is_failed_pass(event) and state.team == event.team:
                 should_start_new_sequence = False
 
-            
-            if should_start_new_sequence:
+            elif should_start_new_sequence:
                 state = replace(
                     state,
                     sequence_id=state.sequence_id + 1,
                     team=event.team
                 )
 
-        return state
+        return self.reduce_after(state, event)
 
-    def reduce_after(self, state: Sequence, event: Event,
-                     next_event: Optional[Event] = None) -> Sequence:
-        
+
+    def reduce_after(self, state: Possesion, event: Event) -> Possesion:
         state = replace(
             state,
             previous_event_type=type(event),
             previous_event_outcome=getattr(event, 'outcome', None)
         )
 
-        
         if isinstance(event, (BallOutEvent, FoulCommittedEvent)):
-            state = replace(
-                state, sequence_id=state.sequence_id + 1, team=None
-            )
-        elif isinstance(event, ShotEvent):
-            if not self._is_rebound(event, next_event):
-                state = replace(
-                    state, sequence_id=state.sequence_id + 1, team=None
-                )
-        elif isinstance(event, DuelEvent) and event.result == DuelResult.LOST:
-            state = replace(
-                state, sequence_id=state.sequence_id + 1, team=None
-            )
+            return replace(state, sequence_id=state.sequence_id + 1, team=None)
 
-        return state
+        if isinstance(event, ShotEvent) and not self._is_rebound(event, self.next_event):
+            return replace(state, sequence_id=state.sequence_id + 1, team=None)
 
-
-    def process(self, state: Sequence, event: Event, dataset: EventDataset) -> Sequence:
-        next_event = None
-        events = list(dataset.events)
-        for i, e in enumerate(events):
-            if e == event and i + 1 < len(events):
-                next_event = events[i + 1]
-                break
-
-        
-        state = self.reduce_before(state, event)
-        
-        state = self.reduce_after(state, event, next_event)
+        if isinstance(event, DuelEvent):
+            if event.result == DuelResult.LOST and not (state.previous_event_type == DuelEvent and state.previous_event_outcome == DuelResult.WON):
+                return replace(state, sequence_id=state.sequence_id + 1, team=None)
 
         return state
